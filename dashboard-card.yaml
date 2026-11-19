@@ -1,0 +1,9 @@
+type: vertical-stack
+cards:
+  - type: todo-list
+    title: Inköpslista
+    entity: todo.shopping_list
+  - type: custom:basvaror-card
+    inventory: todo.basvarulager
+    shopping_list: todo.shopping_list
+    automation: automation.basvaror_sync_shopping_list

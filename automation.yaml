@@ -1,0 +1,82 @@
+alias: Basvaror - sync shopping list
+description: Add or update purchases needed to reach the minimum stock.
+mode: queued
+triggers:
+  - trigger: state
+    entity_id: todo.basvarulager
+    to: null
+  - trigger: homeassistant
+    event: start
+variables:
+  inventory: todo.basvarulager
+  shopping_list: todo.shopping_list
+actions:
+  - action: todo.get_items
+    target:
+      entity_id: "{{ inventory }}"
+    data:
+      status: needs_action
+    response_variable: pantry
+  - variables:
+      staples: >-
+        {% set rows = namespace(items=[], names=[]) %}
+        {% for item in pantry[inventory]['items'] %}
+          {% set fields = item.summary.split('|') | map('trim') | list %}
+          {% if fields | count == 3 and fields[0] and ' — ' not in fields[0]
+            and fields[0] | lower not in rows.names
+            and fields[1] is match('^[0-9]+$') and fields[2] is match('^[0-9]+$') %}
+            {% set amount = fields[2] | int - fields[1] | int %}
+            {% set unit = ('kartong' if amount == 1 else 'kartonger') if fields[0] | lower == 'mjölk' else 'st' %}
+            {% set rows.names = rows.names + [fields[0] | lower] %}
+            {% set rows.items = rows.items + [{'name': fields[0], 'amount': amount, 'unit': unit}] %}
+          {% endif %}
+        {% endfor %}
+        {{ rows.items }}
+  - repeat:
+      for_each: "{{ staples }}"
+      sequence:
+        - variables:
+            label: "{{ repeat.item.name }} — {{ repeat.item.amount }} {{ repeat.item.unit }}"
+        - action: todo.get_items
+          target:
+            entity_id: "{{ shopping_list }}"
+          data:
+            status: needs_action
+          response_variable: shopping
+        - variables:
+            existing: >-
+              {% set found = namespace(uid='', summary='', managed=false) %}
+              {% for item in shopping[shopping_list]['items'] %}
+                {% set parts = item.summary.split(' — ', 1) %}
+                {% set managed = parts | count == 2 and parts[1] is match('^[0-9]+ (st|kartonger?)$') %}
+                {% if not found.uid and parts[0] | trim | lower == repeat.item.name | lower and (managed or parts | count == 1) %}
+                  {% set found.uid = item.uid %}
+                  {% set found.summary = item.summary %}
+                  {% set found.managed = managed %}
+                {% endif %}
+              {% endfor %}
+              {{ {'uid': found.uid, 'summary': found.summary, 'managed': found.managed} }}
+        - choose:
+            - conditions: "{{ repeat.item.amount > 0 and not existing.uid }}"
+              sequence:
+                - action: todo.add_item
+                  target:
+                    entity_id: "{{ shopping_list }}"
+                  data:
+                    item: "{{ label }}"
+            - conditions: "{{ repeat.item.amount > 0 and existing.uid and existing.summary != label }}"
+              sequence:
+                - action: todo.update_item
+                  target:
+                    entity_id: "{{ shopping_list }}"
+                  data:
+                    item: "{{ existing.uid }}"
+                    rename: "{{ label }}"
+            - conditions: "{{ repeat.item.amount <= 0 and existing.managed }}"
+              sequence:
+                - action: todo.update_item
+                  target:
+                    entity_id: "{{ shopping_list }}"
+                  data:
+                    item: "{{ existing.uid }}"
+                    status: completed
